@@ -1,10 +1,12 @@
 from datetime import date, datetime, time
 from decimal import Decimal
+from pathlib import Path
 import json
 
 MARKER = "REUPLOAD_VALIDATION_20260914_1TO8"
 BASE_DATE = date(2026, 1, 1)
 CUTOFF = date(2026, 8, 31)
+RESULT_FILE = "reupload_validation_20260914.json"
 
 
 def _reported_tx(txs, currency):
@@ -83,7 +85,6 @@ def run_validation():
         summary = {
             "marker": MARKER,
             "batch_count": len(batch_rows),
-            "batches": batch_rows,
             "bank_transaction_total": total_count,
             "krw_count": krw_count,
             "fx_count": fx_count,
@@ -98,6 +99,14 @@ def run_validation():
             "mismatched_count": len(mismatched),
             "no_data_count": len(no_data),
         }
+        result_doc = {
+            "summary": summary,
+            "batches": batch_rows,
+            "mismatches": mismatched,
+            "no_data": [{"bank":r["bank"],"account":r["account"],"currency":r["currency"],"opening":r["opening"]} for r in no_data],
+        }
+        Path(core.USER_DATA_ROOT).mkdir(parents=True, exist_ok=True)
+        (Path(core.USER_DATA_ROOT) / RESULT_FILE).write_text(json.dumps(result_doc, ensure_ascii=False, indent=2), encoding="utf-8")
 
         existing = core.AuditLog.query.filter_by(action="reupload_validation_20260831", target_id=MARKER).first()
         if not existing and actor:
@@ -124,11 +133,3 @@ def run_validation():
                     ip_address="system:reupload_validation",
                 ))
             db.session.commit()
-
-        print("MEDPARK_REUPLOAD_VALIDATION_SUMMARY " + json.dumps(summary, ensure_ascii=False, separators=(",", ":")), flush=True)
-        for b in batch_rows:
-            print("MEDPARK_REUPLOAD_BATCH " + json.dumps(b, ensure_ascii=False, separators=(",", ":")), flush=True)
-        for r in mismatched:
-            print("MEDPARK_REUPLOAD_MISMATCH " + json.dumps(r, ensure_ascii=False, separators=(",", ":")), flush=True)
-        for r in no_data:
-            print("MEDPARK_REUPLOAD_NO_DATA " + json.dumps({"bank":r["bank"],"account":r["account"],"currency":r["currency"],"opening":r["opening"]}, ensure_ascii=False, separators=(",", ":")), flush=True)
