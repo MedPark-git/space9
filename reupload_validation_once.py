@@ -1,12 +1,9 @@
-from datetime import date, datetime, time
+from datetime import date, time
 from decimal import Decimal
-from pathlib import Path
-import json
 
-MARKER = "REUPLOAD_VALIDATION_20260914_1TO8"
 BASE_DATE = date(2026, 1, 1)
 CUTOFF = date(2026, 8, 31)
-RESULT_FILE = "reupload_validation_20260914.json"
+MARKER = "REUPLOAD_VALIDATION_20260914_1TO8"
 
 
 def _reported_tx(txs, currency):
@@ -27,109 +24,46 @@ def run_validation():
     with app.app_context():
         actor = core.User.query.filter_by(role="admin", is_active_flag=True).order_by(core.User.created_at).first() or core.User.query.first()
         batches = core.ImportBatch.query.filter(core.ImportBatch.file_type.in_(["krw", "fx"])).order_by(core.ImportBatch.created_at).all()
-        batch_rows = []
-        for b in batches:
-            batch_rows.append({
-                "code": b.batch_code,
-                "type": b.file_type,
-                "start": b.query_start_date.isoformat() if b.query_start_date else None,
-                "end": b.query_end_date.isoformat() if b.query_end_date else None,
-                "total": b.total_rows,
-                "new": b.new_rows,
-                "duplicate": b.duplicate_rows,
-                "review": b.review_rows,
-                "error": b.error_rows,
-            })
-
+        batch_problem = [b for b in batches if b.review_rows or b.error_rows]
         all_txs = core.BankTransaction.query.all()
         total_count = len(all_txs)
-        krw_count = sum(1 for t in all_txs if t.account.currency == "KRW")
-        fx_count = total_count - krw_count
-        min_date = min((t.transaction_date for t in all_txs), default=None)
-        max_date = max((t.transaction_date for t in all_txs), default=None)
-        tx_account_ids = {t.account_id for t in all_txs}
+        sum_new = sum(b.new_rows for b in batches)
+        mismatches = []
 
         obs = core.OpeningBalance.query.filter_by(base_date=BASE_DATE).all()
-        results = []
         for ob in obs:
             txs = [t for t in all_txs if t.account_id == ob.bank_account_id and BASE_DATE <= t.transaction_date <= CUTOFF]
+            if not txs:
+                continue
             opening = Decimal(ob.opening_balance or 0)
             deposits = sum((Decimal(t.deposit_amount) for t in txs), Decimal("0"))
             withdrawals = sum((Decimal(t.withdrawal_amount) for t in txs), Decimal("0"))
             calculated = opening + deposits - withdrawals
             reported_tx = _reported_tx(txs, ob.currency)
-            reported = Decimal(reported_tx.balance) if reported_tx else None
-            difference = calculated - reported if reported is not None else None
-            results.append({
-                "bank": ob.account.financial_institution,
-                "account": ob.account.account_number,
-                "currency": ob.currency,
-                "opening": str(opening),
-                "deposits": str(deposits),
-                "withdrawals": str(withdrawals),
-                "calculated": str(calculated),
-                "reported": str(reported) if reported is not None else None,
-                "difference": str(difference) if difference is not None else None,
-                "reported_date": reported_tx.transaction_date.isoformat() if reported_tx else None,
-                "match": difference == 0 if difference is not None else False,
-                "has_data": bool(txs),
-            })
+            reported = Decimal(reported_tx.balance)
+            diff = calculated - reported
+            if diff != 0:
+                mismatches.append((ob.account.financial_institution, ob.account.account_number, ob.currency, opening, deposits, withdrawals, calculated, reported, diff))
 
-        matched = [r for r in results if r["has_data"] and r["match"]]
-        mismatched = [r for r in results if r["has_data"] and not r["match"]]
-        no_data = [r for r in results if not r["has_data"]]
-        batch_problem = [b for b in batch_rows if b["review"] or b["error"]]
-        sum_new = sum(b["new"] for b in batch_rows)
-        count_consistent = (sum_new == total_count)
-
-        summary = {
-            "marker": MARKER,
-            "batch_count": len(batch_rows),
-            "bank_transaction_total": total_count,
-            "krw_count": krw_count,
-            "fx_count": fx_count,
-            "min_date": min_date.isoformat() if min_date else None,
-            "max_date": max_date.isoformat() if max_date else None,
-            "transaction_account_count": len(tx_account_ids),
-            "opening_account_count": len(obs),
-            "sum_batch_new": sum_new,
-            "db_count_matches_batch_new": count_consistent,
-            "batch_problem_count": len(batch_problem),
-            "matched_count": len(matched),
-            "mismatched_count": len(mismatched),
-            "no_data_count": len(no_data),
-        }
-        result_doc = {
-            "summary": summary,
-            "batches": batch_rows,
-            "mismatches": mismatched,
-            "no_data": [{"bank":r["bank"],"account":r["account"],"currency":r["currency"],"opening":r["opening"]} for r in no_data],
-        }
-        Path(core.USER_DATA_ROOT).mkdir(parents=True, exist_ok=True)
-        (Path(core.USER_DATA_ROOT) / RESULT_FILE).write_text(json.dumps(result_doc, ensure_ascii=False, indent=2), encoding="utf-8")
-
+        krw_count = sum(1 for t in all_txs if t.account.currency == "KRW")
+        fx_count = total_count - krw_count
+        detail = (f"batches={len(batches)} total={total_count} krw={krw_count} fx={fx_count} "
+                  f"sum_new={sum_new} batch_problem={len(batch_problem)} mismatches={len(mismatches)}")
         existing = core.AuditLog.query.filter_by(action="reupload_validation_20260831", target_id=MARKER).first()
         if not existing and actor:
-            db.session.add(core.AuditLog(
-                user_id=actor.id,
-                login_id=actor.login_id,
-                action="reupload_validation_20260831",
-                target_type="bank_transactions",
-                target_id=MARKER,
-                detail=(f"batches={len(batch_rows)} total={total_count} krw={krw_count} fx={fx_count} "
-                        f"matched={len(matched)} mismatched={len(mismatched)} no_data={len(no_data)} "
-                        f"batch_problem={len(batch_problem)} count_consistent={count_consistent}"),
-                ip_address="system:reupload_validation",
-            ))
-            for r in mismatched:
-                db.session.add(core.AuditLog(
-                    user_id=actor.id,
-                    login_id=actor.login_id,
-                    action="reupload_reconciliation_mismatch",
-                    target_type="bank_account",
-                    target_id=f"{r['bank']}|{r['account']}|{r['currency']}",
-                    detail=(f"opening={r['opening']} deposits={r['deposits']} withdrawals={r['withdrawals']} "
-                            f"calculated={r['calculated']} reported={r['reported']} diff={r['difference']}"),
-                    ip_address="system:reupload_validation",
-                ))
+            db.session.add(core.AuditLog(user_id=actor.id, login_id=actor.login_id, action="reupload_validation_20260831", target_type="bank_transactions", target_id=MARKER, detail=detail, ip_address="system:reupload_validation"))
+            for m in mismatches:
+                db.session.add(core.AuditLog(user_id=actor.id, login_id=actor.login_id, action="reupload_reconciliation_mismatch", target_type="bank_account", target_id=f"{m[0]}|{m[1]}|{m[2]}", detail=f"opening={m[3]} deposits={m[4]} withdrawals={m[5]} calculated={m[6]} reported={m[7]} diff={m[8]}", ip_address="system:reupload_validation"))
             db.session.commit()
+
+        problems = []
+        if not batches:
+            problems.append("원화/외화 Import Batch 없음")
+        if batch_problem:
+            problems.append("Batch 오류/확인필요=" + ",".join(f"{b.batch_code}(review={b.review_rows},error={b.error_rows})" for b in batch_problem))
+        if sum_new != total_count:
+            problems.append(f"Batch 신규건수 합({sum_new}) != DB 거래건수({total_count})")
+        if mismatches:
+            problems.append("잔액불일치=" + ";".join(f"{m[0]} {m[1]} {m[2]} calc={m[6]} bank={m[7]} diff={m[8]}" for m in mismatches[:10]))
+        if problems:
+            raise RuntimeError("REUPLOAD_VALIDATION_FAILED | " + " | ".join(problems))
