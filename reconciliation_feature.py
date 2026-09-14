@@ -9,6 +9,17 @@ BASE_DATE = date(2026, 1, 1)
 DEFAULT_CUTOFF = date(2026, 8, 31)
 
 
+def _latest_by_time_then_source_order(txs):
+    if not txs:
+        return None
+    latest_date = max(t.transaction_date for t in txs)
+    same_day = [t for t in txs if t.transaction_date == latest_date]
+    latest_time = max((t.transaction_time or time.min) for t in same_day)
+    same_time = [t for t in same_day if (t.transaction_time or time.min) == latest_time]
+    # e-Branch 자료는 최신 거래가 위쪽에 위치하므로 동일 시각에는 원본행번호가 작은 행이 최종 거래다.
+    return min(same_time, key=lambda t: t.source_row_number)
+
+
 def _select_bank_reported(txs, currency):
     if not txs:
         return None
@@ -16,15 +27,11 @@ def _select_bank_reported(txs, currency):
     same = [t for t in txs if t.transaction_date == latest_date]
     if currency != "KRW":
         return min(same, key=lambda t: t.source_row_number)
-    return max(same, key=lambda t: (t.transaction_time or time.min, t.source_row_number))
+    return _latest_by_time_then_source_order(same)
 
 
 def _select_mmt_reported(txs):
-    if not txs:
-        return None
-    latest_date = max(t.transaction_date for t in txs)
-    same = [t for t in txs if t.transaction_date == latest_date]
-    return max(same, key=lambda t: (t.transaction_time or time.min, t.source_row_number))
+    return _latest_by_time_then_source_order(txs)
 
 
 def register():
