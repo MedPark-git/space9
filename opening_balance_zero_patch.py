@@ -14,6 +14,15 @@ def _decode_payload():
     return json.loads(zlib.decompress(base64.urlsafe_b64decode(raw.encode())).decode("utf-8"))
 
 
+def _select_latest_reported(txs):
+    latest_date = max(t.transaction_date for t in txs)
+    same_day = [t for t in txs if t.transaction_date == latest_date]
+    latest_time = max((t.transaction_time or datetime.min.time()) for t in same_day)
+    same_time = [t for t in same_day if (t.transaction_time or datetime.min.time()) == latest_time]
+    # e-Branch 자료는 최신 거래가 위쪽에 위치하므로 동일 시각에는 원본행번호가 작은 행이 최종 거래다.
+    return min(same_time, key=lambda t: t.source_row_number)
+
+
 def _verify(core, updates):
     cutoff = date(2026, 8, 31)
     results = []
@@ -47,11 +56,10 @@ def _verify(core, updates):
         if not txs:
             raise RuntimeError(f"검증 실패 - 8월말 대사용 거래내역 없음: {account_no}")
 
-        latest_date = max(t.transaction_date for t in txs)
-        same_day = [t for t in txs if t.transaction_date == latest_date]
-        reported = max(same_day, key=lambda t: (t.transaction_time or datetime.min.time(), t.source_row_number)).balance
+        reported_tx = _select_latest_reported(txs)
+        reported = Decimal(reported_tx.balance)
         calculated = actual + sum((Decimal(t.deposit_amount) for t in txs), Decimal(0)) - sum((Decimal(t.withdrawal_amount) for t in txs), Decimal(0))
-        if calculated != Decimal(reported):
+        if calculated != reported:
             raise RuntimeError(
                 f"검증 실패 - 8월말 잔액 불일치: {account_no} calculated={calculated} reported={reported}"
             )
