@@ -9,7 +9,3 @@ def post_worker_init(worker):
     apply_phase21_migrate_guard_fix()
     from phase21_fx_routes import register as register_phase21_fx
     register_phase21_fx()
-    from phase21_historical_backfill_runner import register as register_phase21_historical_backfill
-    register_phase21_historical_backfill()
-    from phase21_backfill_validation import register as register_phase21_backfill_validation
-    register_phase21_backfill_validation()
