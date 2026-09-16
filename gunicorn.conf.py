@@ -7,5 +7,5 @@ def post_worker_init(worker):
     apply_phase21_fx_priority()
     from phase21_fx_routes import register as register_phase21_fx
     register_phase21_fx()
-    from phase21_validation import register as register_phase21_validation
-    register_phase21_validation()
+    from phase21_stage_validation import register as register_phase21_stage_validation
+    register_phase21_stage_validation()
