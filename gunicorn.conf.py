@@ -11,3 +11,5 @@ def post_worker_init(worker):
     register_phase21_fx()
     from phase21_historical_backfill_runner import register as register_phase21_historical_backfill
     register_phase21_historical_backfill()
+    from phase21_backfill_validation import register as register_phase21_backfill_validation
+    register_phase21_backfill_validation()
