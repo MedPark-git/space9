@@ -5,6 +5,8 @@ def post_worker_init(worker):
     register_phase2_enhancements()
     from phase21_fx_priority import apply as apply_phase21_fx_priority
     apply_phase21_fx_priority()
+    from phase21_migrate_guard_fix import apply as apply_phase21_migrate_guard_fix
+    apply_phase21_migrate_guard_fix()
     from phase21_fx_routes import register as register_phase21_fx
     register_phase21_fx()
     from phase21_historical_backfill import register as register_phase21_historical_backfill
