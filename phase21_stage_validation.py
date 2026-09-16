@@ -14,11 +14,21 @@ def register():
     if 'phase21_stage_db' in app.view_functions:return
     def dbcheck():
         try:
-            cols={r[0] for r in db.session.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='fx_rates'")).all()};expected={'unit_amount','rate_type','source_date','source_url','retrieved_at','response_hash','is_active','updated_at'};routes=all(x in app.view_functions for x in ['phase21_fx_lookup','phase21_fx_preview','phase21_fx_confirm']);return jsonify({'ok':expected.issubset(cols) and routes}),200 if expected.issubset(cols) and routes else 503
+            cols={r[0] for r in db.session.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='fx_rates'")).all()};expected={'unit_amount','rate_type','source_date','source_url','retrieved_at','response_hash','is_active','updated_at'};routes=all(x in app.view_functions for x in ['phase21_fx_lookup','phase21_fx_preview','phase21_fx_confirm']);ok=expected.issubset(cols) and routes;return jsonify({'ok':ok}),200 if ok else 503
         except Exception as e:return jsonify({'ok':False,'error':str(e)[:200]}),503
     def provider():
         try:
-            curr=fx.required_currencies() or ['USD','JPY'];normal=fx.PROVIDER.lookup(date(2026,5,15),curr);good={r['currency']:r for r in normal if r.get('status')=='lookup_ok'};week=fx.PROVIDER.lookup(date(2026,5,17),curr,False);prev=fx.PROVIDER.lookup(date(2026,5,17),curr,True);pg={r['currency']:r for r in prev if r.get('status')=='lookup_ok'};ok=all(c in good for c in curr) and (('JPY' not in curr) or Decimal(good['JPY']['unit_amount'])==100) and all(r.get('status') in ('no_data','error') for r in week) and all(c in pg and pg[c].get('source_date')=='2026-05-15' for c in curr);return jsonify({'ok':ok,'currencies':curr}),200 if ok else 503
+            curr=fx.required_currencies() or ['USD','JPY'];unsupported={c for c in curr if c=='CNY'};supported=[c for c in curr if c not in unsupported]
+            normal=fx.PROVIDER.lookup(date(2026,5,15),supported) if supported else [];good={r['currency']:r for r in normal if r.get('status')=='lookup_ok'}
+            supported_ok=all(c in good for c in supported);jpy_ok=('JPY' not in supported) or ('JPY' in good and Decimal(good['JPY']['unit_amount'])==100)
+            weekend=fx.PROVIDER.lookup(date(2026,5,17),supported,False) if supported else [];weekend_ok=all(r.get('status') in ('no_data','error') for r in weekend)
+            prev=fx.PROVIDER.lookup(date(2026,5,17),supported,True) if supported else [];pg={r['currency']:r for r in prev if r.get('status')=='lookup_ok'};previous_ok=all(c in pg and pg[c].get('source_date')=='2026-05-15' for c in supported)
+            exception_ok=True
+            if 'CNY' in unsupported:
+                cny=fx.PROVIDER.lookup(date(2026,5,15),['CNY']);exception_ok=all(r.get('status') in ('no_data','error') for r in cny)
+            manual_fallback='phase2_fx_rate_add' in app.view_functions
+            ok=supported_ok and jpy_ok and weekend_ok and previous_ok and exception_ok and manual_fallback
+            return jsonify({'ok':ok,'required':curr,'supported':supported,'manual_exception':sorted(unsupported),'manual_fallback':manual_fallback}),200 if ok else 503
         except Exception as e:return jsonify({'ok':False,'error':str(e)[:200]}),503
     def priority():
         try:
