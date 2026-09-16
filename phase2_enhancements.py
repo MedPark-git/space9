@@ -7,6 +7,7 @@ from flask import Response, request
 from flask_login import login_required
 from openpyxl import Workbook
 from openpyxl.styles import Font
+from sqlalchemy import func
 
 import phase2_feature as p2
 import app as pkg
@@ -20,7 +21,13 @@ REGISTERED = False
 def _loan_balances_as_of(day):
     totals = defaultdict(Decimal)
     for account in core.LoanAccount.query.filter_by(status="active").all():
-        tx = core.LoanTransaction.query.filter(core.LoanTransaction.loan_account_id == account.id, core.LoanTransaction.transaction_date <= day).order_by(core.LoanTransaction.transaction_date.desc(), core.LoanTransaction.source_row_number.asc()).first()
+        tx = core.LoanTransaction.query.filter(
+            core.LoanTransaction.loan_account_id == account.id,
+            core.LoanTransaction.transaction_date <= day,
+        ).order_by(
+            core.LoanTransaction.transaction_date.desc(),
+            core.LoanTransaction.source_row_number.asc(),
+        ).first()
         if tx:
             totals[account.currency] += p2._dec(tx.loan_balance)
         elif account.loan_date and account.loan_date <= day:
@@ -103,6 +110,33 @@ def register():
         """
         return p2._render("자금일보", body, day=day, s=snap, versions=versions, selected_version=selected_version, latest_state=latest_state, latest_upload=latest_upload)
 
+    @core.roles_required("admin", "editor")
+    def cash_journal_action_enhanced():
+        day = p2._d(request.form.get("date"))
+        action = request.form.get("action")
+        if action not in ("review", "confirm") or not day:
+            from flask import abort
+            abort(400)
+        snap = _snapshot(day)
+        if action == "confirm" and not snap["ready"]:
+            from flask import flash, redirect, url_for
+            flash("잔액 불일치·자료부족·환율 누락이 있어 확정할 수 없습니다.", "error")
+            return redirect(url_for("cash_journal", date=day.isoformat()))
+        next_ver = (db.session.query(func.max(p2.CashJournalVersion.version)).filter_by(journal_date=day).scalar() or 0) + 1
+        status = "confirmed" if action == "confirm" else "reviewed"
+        from flask_login import current_user
+        v = p2.CashJournalVersion(journal_date=day, version=next_ver, status=status, snapshot_json=snap, created_by=current_user.id)
+        v.reviewed_by = current_user.id if action == "review" else None
+        v.confirmed_by = current_user.id if action == "confirm" else None
+        v.confirmed_at = core.utcnow() if action == "confirm" else None
+        v.change_reason = (request.form.get("reason") or "").strip()
+        db.session.add(v)
+        core.audit("cash_journal_snapshot_created", user=current_user, target_type="cash_journal_version", target_id=v.id, detail=f"date={day} version={next_ver} status={status}")
+        db.session.commit()
+        from flask import flash, redirect, url_for
+        flash(f"자금일보 Version {next_ver} ({status}) 저장 완료", "success")
+        return redirect(url_for("cash_journal", date=day.isoformat()))
+
     @login_required
     def cash_journal_excel_enhanced():
         day = p2._d(request.args.get("date"), p2._latest_transaction_date() or date.today())
@@ -126,5 +160,6 @@ def register():
 
     app.view_functions["dashboard"] = dashboard_enhanced
     app.view_functions["cash_journal"] = cash_journal_enhanced
+    app.view_functions["phase2_cash_journal_action"] = cash_journal_action_enhanced
     app.view_functions["phase2_cash_journal_excel"] = cash_journal_excel_enhanced
     REGISTERED = True
