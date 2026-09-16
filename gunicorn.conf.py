@@ -3,3 +3,5 @@ def post_worker_init(worker):
     register_phase2()
     from phase2_enhancements import register as register_phase2_enhancements
     register_phase2_enhancements()
+    from phase21_debug import safe_register
+    safe_register()
