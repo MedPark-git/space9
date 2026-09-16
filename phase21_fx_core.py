@@ -1,7 +1,6 @@
-import io, json, uuid
+import json
 from datetime import date, datetime
 from decimal import Decimal
-from pathlib import Path
 from sqlalchemy import text
 
 import app as pkg
@@ -13,11 +12,16 @@ PROVIDER=SeoulMoneyBrokerageProvider(); ALL=['USD','JPY','EUR','CNY','CNH','HKD'
 LEGACY_UNIT_ONE={'USD','EUR','CNY','CNH','HKD','GBP','CHF','AUD','NZD','CAD','SGD','THB','MYR','PHP'}
 
 def migrate():
+    # IMPORTANT: count queries open an ORM transaction. Release it before ALTER TABLE
+    # so the DDL connection cannot wait on this worker's own AccessShare lock.
     before={k:v for k,v in [('fx',p2.FxRate.query.count()),('bt',core.BankTransaction.query.count()),('ob',core.OpeningBalance.query.count()),('ver',p2.CashJournalVersion.query.count()),('batch',core.ImportBatch.query.count()),('raw',core.ImportRawRow.query.count())]}
+    db.session.rollback()
     stmts=["ALTER TABLE fx_rates ADD COLUMN IF NOT EXISTS unit_amount NUMERIC(28,8)","ALTER TABLE fx_rates ADD COLUMN IF NOT EXISTS rate_type VARCHAR(50)","ALTER TABLE fx_rates ADD COLUMN IF NOT EXISTS source_date DATE","ALTER TABLE fx_rates ADD COLUMN IF NOT EXISTS source_url VARCHAR(500)","ALTER TABLE fx_rates ADD COLUMN IF NOT EXISTS retrieved_at TIMESTAMPTZ","ALTER TABLE fx_rates ADD COLUMN IF NOT EXISTS response_hash VARCHAR(64)","ALTER TABLE fx_rates ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE","ALTER TABLE fx_rates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ","CREATE INDEX IF NOT EXISTS ix_fx_rates_lookup21 ON fx_rates(base_date,currency,is_active)"]
     with db.engine.begin() as c:
+        c.execute(text("SELECT pg_advisory_xact_lock(874221941)"))
         for s in stmts:c.execute(text(s))
     after={k:v for k,v in [('fx',p2.FxRate.query.count()),('bt',core.BankTransaction.query.count()),('ob',core.OpeningBalance.query.count()),('ver',p2.CashJournalVersion.query.count()),('batch',core.ImportBatch.query.count()),('raw',core.ImportRawRow.query.count())]}
+    db.session.rollback()
     if before!=after:raise RuntimeError(f'Phase2.1 additive migration row guard failed: {before}->{after}')
 
 def required_currencies():
@@ -92,13 +96,13 @@ def patch_snapshot():
     if getattr(p2._snapshot,'_phase21',False):return
     original=p2._snapshot
     def snap(day,mmt):
-        s=original(day,mmt);info=rate_info(day);fx=Decimal('0');missing=[]
+        s=original(day,mmt);info=rate_info(day);fx_total=Decimal('0');missing=[]
         for a in s.get('accounts',[]):
             if a['currency']=='KRW':continue
             i=info.get(a['currency'])
             if not i:a.update(rate=None,unit_amount=None,krw=None,rate_source=None,rate_source_date=None);missing.append(a['currency']);continue
-            bal=Decimal(a['balance']);rate=Decimal(i['rate']);unit=Decimal(i['unit_amount']);krw=bal/unit*rate;fx+=krw;a.update(rate=str(rate),unit_amount=str(unit),krw=str(krw),rate_type=i['rate_type'],rate_source=i['source'],rate_source_date=i['source_date'])
-        s['fx_krw_total']=str(fx);s['total_financial']=str(Decimal(s['krw_total'])+fx+Decimal(s['mmt_total']));s['expected']=str(Decimal(s['total_financial'])+Decimal(s['planned_in'])-Decimal(s['planned_out']));s['missing_rates']=sorted(set(missing));s['ready']=s['status']['ready'] and not s['missing_rates'];s['fx_rates_used']=info;return s
+            bal=Decimal(a['balance']);rate=Decimal(i['rate']);unit=Decimal(i['unit_amount']);krw=bal/unit*rate;fx_total+=krw;a.update(rate=str(rate),unit_amount=str(unit),krw=str(krw),rate_type=i['rate_type'],rate_source=i['source'],rate_source_date=i['source_date'])
+        s['fx_krw_total']=str(fx_total);s['total_financial']=str(Decimal(s['krw_total'])+fx_total+Decimal(s['mmt_total']));s['expected']=str(Decimal(s['total_financial'])+Decimal(s['planned_in'])-Decimal(s['planned_out']));s['missing_rates']=sorted(set(missing));s['ready']=s['status']['ready'] and not s['missing_rates'];s['fx_rates_used']=info;return s
     snap._phase21=True;p2._snapshot=snap;p2._rate_for=effective
 
 def preview_path(token):return core.PENDING_DIR/f'{token}_fx21.json'
