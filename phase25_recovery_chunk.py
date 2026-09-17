@@ -14,8 +14,16 @@ def register():
     global REGISTERED
     if REGISTERED:return
     def receive():
-        _auth();kind=(request.args.get('kind') or '').strip();idx=request.args.get('index');data=request.args.get('data') or ''
-        if kind not in {'krw','fx'} or not idx or not idx.isdigit() or not data:return Response('ERROR',status=400,mimetype='text/plain')
-        CHUNK_DIR.mkdir(parents=True,exist_ok=True);p=CHUNK_DIR/f'{kind}_{int(idx):03d}.txt';p.write_text(data,encoding='utf-8');return Response(f'OK {kind} {idx} {len(data)}',mimetype='text/plain')
+        _auth();kind=(request.args.get('kind') or '').strip();action=(request.args.get('action') or '').strip()
+        if kind not in {'krw','fx'}:return Response('ERROR',status=400,mimetype='text/plain')
+        CHUNK_DIR.mkdir(parents=True,exist_ok=True)
+        if action=='clear':
+            n=0
+            for p in CHUNK_DIR.glob(f'{kind}_*.txt'):
+                p.unlink(missing_ok=True);n+=1
+            return Response(f'OK cleared {kind} {n}',mimetype='text/plain')
+        idx=request.args.get('index');data=request.args.get('data') or ''
+        if not idx or not idx.isdigit() or not data:return Response('ERROR',status=400,mimetype='text/plain')
+        p=CHUNK_DIR/f'{kind}_{int(idx):03d}.txt';p.write_text(data,encoding='utf-8');return Response(f'OK {kind} {idx} {len(data)}',mimetype='text/plain')
     app.add_url_rule('/maintenance/phase25-recovery-chunk','phase25_recovery_chunk',receive,methods=['GET'])
     REGISTERED=True
