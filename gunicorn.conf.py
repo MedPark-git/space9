@@ -3,3 +3,5 @@ def post_worker_init(worker):
     register_phase25()
     from phase25_recovery import register as register_phase25_recovery
     register_phase25_recovery()
+    from phase25_recovery_payload_patch import apply as apply_recovery_payload_patch
+    apply_recovery_payload_patch()
