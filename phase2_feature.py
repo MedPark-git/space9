@@ -380,9 +380,14 @@ def register():
     if REGISTERED: return
     import app as pkg
     app = pkg.app; mmt_opening_model = pkg.MmtOpeningBalance
-    # Phase 2.5: startup registers routes only. Schema migrations, category seeding,
-    # annotations, and daily-balance calculations run through explicit maintenance
-    # or import-confirm workflows, never on worker startup.
+    with app.app_context():
+        before = {"bank_transactions": core.BankTransaction.query.count(), "opening_balances": core.OpeningBalance.query.count(), "import_batches": core.ImportBatch.query.count(), "import_raw_rows": core.ImportRawRow.query.count()}
+        with db.engine.begin() as conn:
+            conn.execute(text(f"SELECT pg_advisory_xact_lock({PHASE2_LOCK})")); db.metadata.create_all(bind=conn)
+        _ensure_category_seed(); db.session.commit()
+        after = {"bank_transactions": core.BankTransaction.query.count(), "opening_balances": core.OpeningBalance.query.count(), "import_batches": core.ImportBatch.query.count(), "import_raw_rows": core.ImportRawRow.query.count()}
+        if before != after: raise RuntimeError(f"Phase2 additive migration violated production-data guard: before={before} after={after}")
+        _ensure_annotations(); _refresh_daily_checks(); db.session.commit()
     original_confirm = app.view_functions.get("import_confirm")
     if original_confirm and not getattr(original_confirm, "_phase2_wrapped", False):
         def import_confirm_phase2(token):
