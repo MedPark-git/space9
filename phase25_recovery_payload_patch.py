@@ -18,6 +18,14 @@ def _decrypt_blob(enc,kind):
         plain[i:i+len(block)]=bytes(a^b for a,b in zip(block,ks))
     return lzma.decompress(bytes(plain))
 
+def _env_payload(kind):
+    prefix=f'PHASE25_PAYLOAD_{kind.upper()}_'
+    parts=[]
+    for i in range(100):
+        v=os.getenv(prefix+str(i))
+        if v:parts.append(v)
+    return ''.join(parts) if parts else None
+
 def _chunk_payload(kind):
     files=sorted(CHUNK_DIR.glob(f'{kind}_*.txt'))
     if not files:return None
@@ -32,7 +40,7 @@ def apply():
     def materialize(kind):
         c=r.FILES[kind];r.ROOT.mkdir(parents=True,exist_ok=True);p=r.ROOT/f'{kind}.xls'
         if p.exists() and hashlib.sha256(p.read_bytes()).hexdigest()==c['sha']:return p
-        enc=_chunk_payload(kind) or _repo_payload(kind)
+        enc=_env_payload(kind) or _chunk_payload(kind) or _repo_payload(kind)
         raw=_decrypt_blob(enc,kind) if enc else None
         if raw is None:
             parts=[]
